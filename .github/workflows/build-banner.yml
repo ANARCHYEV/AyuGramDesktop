@@ -1,0 +1,63 @@
+name: Build AyuGram 7.0.9 with Profile Banner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Save profile banner patch
+        shell: pwsh
+        run: |
+          Copy-Item profile-banner.patch "$env:RUNNER_TEMP\profile-banner.patch"
+
+      - name: Switch source to AyuGram v7.0.9 and apply patch
+        shell: pwsh
+        run: |
+          git fetch --tags origin
+          git reset --hard v7.0.9
+
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+          git apply --check "$env:RUNNER_TEMP\profile-banner.patch"
+          git apply "$env:RUNNER_TEMP\profile-banner.patch"
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Prepare dependencies
+        shell: cmd
+        run: Telegram\build\prepare\win.bat
+
+      - name: Configure
+        shell: cmd
+        working-directory: Telegram
+        run: configure.bat x64 -D TDESKTOP_API_ID=2040 -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627
+
+      - name: Build Release
+        shell: cmd
+        run: cmake --build out --config Release --target Telegram --parallel
+
+      - name: Upload AyuGram
+        uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-7.0.9-ProfileBanner-Windows
+          path: out/Release/AyuGram.exe
+          if-no-files-found: error
