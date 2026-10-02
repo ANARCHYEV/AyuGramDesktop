@@ -9,33 +9,28 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout fork (only to get the patch)
+      - name: Checkout your fork (only to get the patch)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           submodules: false
+          path: control
 
       - name: Save profile banner patch
         shell: pwsh
         run: |
-          Copy-Item profile-banner.patch "$env:RUNNER_TEMP\profile-banner.patch"
+          Copy-Item "$env:GITHUB_WORKSPACE\control\profile-banner.patch" "$env:RUNNER_TEMP\profile-banner.patch"
 
-      - name: Download official AyuGram 7.0.9 full source
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\src" | Out-Null
-          curl.exe -L --fail --retry 3 `
-            -o "$env:RUNNER_TEMP\AyuGramDesktop-7.0.9-full.tar.gz" `
-            "https://github.com/AyuGram/AyuGramDesktop/releases/download/v7.0.9/AyuGramDesktop-7.0.9-full.tar.gz"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          tar -xzf "$env:RUNNER_TEMP\AyuGramDesktop-7.0.9-full.tar.gz" `
-            -C "$env:GITHUB_WORKSPACE\src" --strip-components=1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          if (-not (Test-Path "$env:GITHUB_WORKSPACE\src\Telegram")) {
-            throw "Telegram source directory was not found after extraction."
-          }
+      # This is the exact commit contained in the AyuGramDesktop-7.0.9.zip
+      # that the profile-banner patch was created and verified against.
+      - name: Checkout exact AyuGram 7.0.9 source
+        uses: actions/checkout@v4
+        with:
+          repository: AyuGram/AyuGramDesktop
+          ref: 032ad328549cff9f612d106d8660fbc03eb43130
+          fetch-depth: 1
+          submodules: recursive
+          path: src
 
       - name: Apply profile banner patch
         shell: pwsh
@@ -56,22 +51,19 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Work around current MSYS2 diffutils package issue
+      - name: Work around current MSYS2 diffutils package rename
         shell: pwsh
         working-directory: src
         run: |
           $file = "Telegram/build/prepare/prepare.py"
-          $text = [System.IO.File]::ReadAllText((Resolve-Path $file))
+          $path = Resolve-Path $file
+          $text = [System.IO.File]::ReadAllText($path)
           $old = "mingw-w64-x86_64-diffutils ^"
           if (-not $text.Contains($old)) {
-            throw "Expected diffutils dependency was not found in prepare.py"
+            throw "Expected mingw-w64-x86_64-diffutils dependency was not found in prepare.py"
           }
           $text = $text.Replace($old, "diffutils ^")
-          [System.IO.File]::WriteAllText(
-            (Resolve-Path $file),
-            $text,
-            [System.Text.UTF8Encoding]::new($false)
-          )
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
 
       - name: Prepare dependencies
         shell: cmd
