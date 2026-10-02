@@ -1,0 +1,301 @@
+--- a/Telegram/SourceFiles/ayu/ayu_settings.h
++++ b/Telegram/SourceFiles/ayu/ayu_settings.h
+@@ -353,6 +353,8 @@
+ 	[[nodiscard]] int avatarCorners() const { return _avatarCorners.current(); }
+ 	[[nodiscard]] bool singleCornerRadius() const { return _singleCornerRadius.current(); }
+ 	[[nodiscard]] bool streamerMode() const { return _streamerMode.current(); }
++	[[nodiscard]] const QString &profileBannerPath() const { return _profileBannerPath.current(); }
++	[[nodiscard]] int profileBannerDim() const { return _profileBannerDim.current(); }
+ 
+ 	void setSaveDeletedMessages(bool val);
+ 	void setSaveMessagesHistory(bool val);
+@@ -440,6 +442,8 @@
+ 	void setAvatarCorners(int val);
+ 	void setSingleCornerRadius(bool val);
+ 	void setStreamerMode(bool val);
++	void setProfileBannerPath(const QString &val);
++	void setProfileBannerDim(int val);
+ 
+ 	[[nodiscard]] rpl::producer<bool> useGlobalGhostModeValue() const { return _useGlobalGhostMode.value(); }
+ 	[[nodiscard]] rpl::producer<bool> useGlobalGhostModeChanges() const { return _useGlobalGhostMode.changes(); }
+@@ -615,6 +619,10 @@
+ 	[[nodiscard]] rpl::producer<bool> singleCornerRadiusChanges() const { return _singleCornerRadius.changes(); }
+ 	[[nodiscard]] rpl::producer<bool> streamerModeValue() const { return _streamerMode.value(); }
+ 	[[nodiscard]] rpl::producer<bool> streamerModeChanges() const { return _streamerMode.changes(); }
++	[[nodiscard]] rpl::producer<QString> profileBannerPathValue() const { return _profileBannerPath.value(); }
++	[[nodiscard]] rpl::producer<QString> profileBannerPathChanges() const { return _profileBannerPath.changes(); }
++	[[nodiscard]] rpl::producer<int> profileBannerDimValue() const { return _profileBannerDim.value(); }
++	[[nodiscard]] rpl::producer<int> profileBannerDimChanges() const { return _profileBannerDim.changes(); }
+ 
+ 	friend void to_json(nlohmann::json &j, const AyuSettings &s);
+ 	friend void from_json(const nlohmann::json &j, AyuSettings &s);
+@@ -711,6 +719,8 @@
+ 	rpl::variable<int> _avatarCorners = 23;
+ 	rpl::variable<bool> _singleCornerRadius = false;
+ 	rpl::variable<bool> _streamerMode = false;
++	rpl::variable<QString> _profileBannerPath;
++	rpl::variable<int> _profileBannerDim = 20;
+ 
+ 	rpl::variable<bool> _useGlobalGhostMode = true;
+ 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;
+--- a/Telegram/SourceFiles/ayu/ayu_settings.cpp
++++ b/Telegram/SourceFiles/ayu/ayu_settings.cpp
+@@ -21,6 +21,7 @@
+ #include "rpl/combine.h"
+ #include "window/window_controller.h"
+ 
++#include <algorithm>
+ #include <fstream>
+ #include <QApplication>
+ 
+@@ -1069,6 +1070,21 @@
+ 	save();
+ }
+ 
++void AyuSettings::setProfileBannerPath(const QString &val) {
++	if (_profileBannerPath.current() == val) return;
++	_profileBannerPath = val;
++	repaintApp();
++	save();
++}
++
++void AyuSettings::setProfileBannerDim(int val) {
++	val = std::clamp(val, 0, 80);
++	if (_profileBannerDim.current() == val) return;
++	_profileBannerDim = val;
++	repaintApp();
++	save();
++}
++
+ void to_json(nlohmann::json &j, const AyuSettings &s) {
+ 	auto ghostAccounts = nlohmann::json::object();
+ 	for (const auto &[key, value] : s._ghostAccounts) {
+@@ -1165,6 +1181,8 @@
+ 		{"avatarCorners", s._avatarCorners.current()},
+ 		{"singleCornerRadius", s._singleCornerRadius.current()},
+ 		{"streamerMode", s._streamerMode.current()},
++		{"profileBannerPath", s._profileBannerPath.current()},
++		{"profileBannerDim", s._profileBannerDim.current()},
+ 		{"messageShotSettings", s._messageShotSettings}
+ 	};
+ }
+@@ -1269,6 +1287,11 @@
+ 	s._avatarCorners = j.value("avatarCorners", defaults._avatarCorners.current());
+ 	s._singleCornerRadius = j.value("singleCornerRadius", defaults._singleCornerRadius.current());
+ 	s._streamerMode = j.value("streamerMode", defaults._streamerMode.current());
++	s._profileBannerPath = j.value("profileBannerPath", defaults._profileBannerPath.current());
++	s._profileBannerDim = std::clamp(
++		j.value("profileBannerDim", defaults._profileBannerDim.current()),
++		0,
++		80);
+ 
+ 	if (j.contains("messageShotSettings") && j["messageShotSettings"].is_object()) {
+ 		j["messageShotSettings"].get_to(s._messageShotSettings);
+--- a/Telegram/SourceFiles/ayu/ui/settings/settings_appearance.cpp
++++ b/Telegram/SourceFiles/ayu/ui/settings/settings_appearance.cpp
+@@ -15,6 +15,8 @@
+ #include "ayu/ui/settings/ayu_builder.h"
+ #include "ayu/ui/settings/settings_ayu_utils.h"
+ #include "ayu/ui/settings/settings_main.h"
++#include "core/application.h"
++#include "core/file_utilities.h"
+ #include "inline_bots/bot_attach_web_view.h"
+ #include "main/main_session.h"
+ #include "settings/settings_builder.h"
+@@ -31,6 +33,9 @@
+ #include "ui/wrap/vertical_layout.h"
+ #include "window/window_session_controller.h"
+ 
++#include <QtCore/QFileInfo>
++#include <QtGui/QImageReader>
++
+ namespace Settings {
+ 
+ using namespace Builder;
+@@ -229,6 +234,59 @@
+ 		},
+ 	});
+ 
++	builder.addButton({
++		.id = u"ayu/profileBanner"_q,
++		.title = rpl::single(u"Profile banner"_q),
++		.st = &st::settingsButtonNoIcon,
++		.label = settings->profileBannerPathValue(
++		) | rpl::map([](const QString &path) {
++			return path.isEmpty()
++				? u"Choose image"_q
++				: QFileInfo(path).fileName();
++		}),
++		.onClick = [=] {
++			FileDialog::GetOpenPath(
++				Core::App().getFileDialogParent(),
++				u"Choose profile banner"_q,
++				u"Images (*.png *.jpg *.jpeg *.webp *.bmp)"_q,
++				[=](const FileDialog::OpenResult &result) {
++					if (result.paths.isEmpty()) {
++						return;
++					}
++					const auto path = result.paths.front();
++					QImageReader reader(path);
++					if (!reader.canRead()) {
++						return;
++					}
++					AyuSettings::getInstance().setProfileBannerPath(path);
++				});
++		},
++	});
++
++	builder.addButton({
++		.id = u"ayu/profileBannerRemove"_q,
++		.title = rpl::single(u"Remove profile banner"_q),
++		.st = &st::settingsButtonNoIcon,
++		.onClick = [=] {
++			AyuSettings::getInstance().setProfileBannerPath(QString());
++		},
++	});
++
++	ayu.addSlider({
++		.id = u"ayu/profileBannerDim"_q,
++		.title = rpl::single(u"Banner dimming"_q),
++		.steps = 17,
++		.current = settings->profileBannerDim(),
++		.indexToValue = [](int index) { return index * 5; },
++		.onChanged = [](int val) {
++			AyuSettings::getInstance().setProfileBannerDim(val);
++		},
++		.onFinalChanged = [](int val) {
++			AyuSettings::getInstance().setProfileBannerDim(val);
++		},
++		.formatLabel = [](int val) { return QString::number(val) + u"%"_q; },
++	});
++
+ 	ayu.addSectionDivider();
+ }
+ 
+--- a/Telegram/SourceFiles/info/profile/info_profile_top_bar.h
++++ b/Telegram/SourceFiles/info/profile/info_profile_top_bar.h
+@@ -155,6 +155,8 @@
+ private:
+ 	void paintEdges(QPainter &p, const QBrush &brush) const;
+ 	void paintEdges(QPainter &p) const;
++	void reloadProfileBanner();
++	void paintProfileBanner(QPainter &p);
+ 	void updateLabelsPosition();
+ 	[[nodiscard]] int titleMostLeft() const;
+ 	[[nodiscard]] int statusMostLeft() const;
+@@ -316,6 +318,7 @@
+ 	std::optional<QColor> _solidBg;
+ 	QImage _cachedGradient;
+ 	QPainterPath _cachedClipPath;
++	QImage _profileBanner;
+ 	std::unique_ptr<Ui::Text::CustomEmoji> _patternEmoji;
+ 	QImage _basePatternImage;
+ 
+--- a/Telegram/SourceFiles/info/profile/info_profile_top_bar.cpp
++++ b/Telegram/SourceFiles/info/profile/info_profile_top_bar.cpp
+@@ -107,8 +107,10 @@
+ 
+ #include <QtGui/QClipboard>
+ #include <QtGui/QGuiApplication>
++#include <QtGui/QImageReader>
+ 
+ // AyuGram includes
++#include "ayu/ayu_settings.h"
+ #include "ayu/ui/ayu_userpic.h"
+ #include "ayu/utils/telegram_helpers.h"
+ 
+@@ -416,6 +418,19 @@
+ 
+ 	bindStatus();
+ 
++	if (_peer->isSelf() && _source == Source::Profile) {
++		auto &ayu = AyuSettings::getInstance();
++		reloadProfileBanner();
++		ayu.profileBannerPathChanges(
++		) | rpl::on_next([=](const QString &) {
++			reloadProfileBanner();
++		}, lifetime());
++		ayu.profileBannerDimChanges(
++		) | rpl::on_next([=](int) {
++			update();
++		}, lifetime());
++	}
++
+ 	_title->setSelectable(true);
+ 	_title->setContextCopyText(tr::lng_profile_copy_fullname(tr::now));
+ 
+@@ -1768,6 +1783,65 @@
+ 	}
+ }
+ 
++void TopBar::reloadProfileBanner() {
++	_profileBanner = QImage();
++	if (!_peer->isSelf() || _source != Source::Profile) {
++		update();
++		return;
++	}
++	const auto path = AyuSettings::getInstance().profileBannerPath();
++	if (path.isEmpty()) {
++		update();
++		return;
++	}
++	QImageReader reader(path);
++	reader.setAutoTransform(true);
++	_profileBanner = reader.read();
++	update();
++}
++
++void TopBar::paintProfileBanner(QPainter &p) {
++	if (_profileBanner.isNull() || width() <= 0 || height() <= 0) {
++		return;
++	}
++
++	const auto target = QRectF(rect());
++	const auto imageWidth = float64(_profileBanner.width());
++	const auto imageHeight = float64(_profileBanner.height());
++	const auto targetRatio = target.width() / target.height();
++	const auto imageRatio = imageWidth / imageHeight;
++	auto source = QRectF(0., 0., imageWidth, imageHeight);
++	if (imageRatio > targetRatio) {
++		const auto sourceWidth = imageHeight * targetRatio;
++		source.setLeft((imageWidth - sourceWidth) / 2.);
++		source.setWidth(sourceWidth);
++	} else {
++		const auto sourceHeight = imageWidth / targetRatio;
++		source.setTop((imageHeight - sourceHeight) / 2.);
++		source.setHeight(sourceHeight);
++	}
++
++	p.save();
++	if (_roundEdges) {
++		auto clip = QPainterPath();
++		const auto radius = st::boxRadius;
++		clip.addRoundedRect(
++			rect() + QMargins{ 0, 0, 0, radius + 1 },
++			radius,
++			radius);
++		p.setClipPath(clip);
++	}
++	{
++		auto hq = PainterHighQualityEnabler(p);
++		p.drawImage(target, _profileBanner, source);
++	}
++	const auto dim = AyuSettings::getInstance().profileBannerDim();
++	if (dim > 0) {
++		p.fillRect(rect(), QColor(0, 0, 0, (255 * dim) / 100));
++	}
++	p.restore();
++}
++
+ int TopBar::titleMostLeft() const {
+ 	return (_back && _back->toggled())
+ 		? _back->width()
+@@ -2829,6 +2903,8 @@
+ 		paintAnimatedPattern(p, rect(), geometry);
+ 	}
+ 
++	paintProfileBanner(p);
++
+ 	const auto clipBounds = e->region().boundingRect();
+ 	if (clipBounds.bottom() >= geometry.top()
+ 		&& clipBounds.top() <= geometry.bottom()) {
