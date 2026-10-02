@@ -9,28 +9,42 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout fork
+      - name: Checkout fork (only to get the patch)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
+          fetch-depth: 1
+          submodules: false
 
       - name: Save profile banner patch
         shell: pwsh
         run: |
           Copy-Item profile-banner.patch "$env:RUNNER_TEMP\profile-banner.patch"
 
-      - name: Switch source to AyuGram v7.0.9 and apply patch
+      - name: Download official AyuGram 7.0.9 full source
         shell: pwsh
         run: |
-          git fetch --tags origin
-          git reset --hard v7.0.9
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\src" | Out-Null
+          curl.exe -L --fail --retry 3 `
+            -o "$env:RUNNER_TEMP\AyuGramDesktop-7.0.9-full.tar.gz" `
+            "https://github.com/AyuGram/AyuGramDesktop/releases/download/v7.0.9/AyuGramDesktop-7.0.9-full.tar.gz"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          git submodule sync --recursive
-          git submodule update --init --recursive
+          tar -xzf "$env:RUNNER_TEMP\AyuGramDesktop-7.0.9-full.tar.gz" `
+            -C "$env:GITHUB_WORKSPACE\src" --strip-components=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          if (-not (Test-Path "$env:GITHUB_WORKSPACE\src\Telegram")) {
+            throw "Telegram source directory was not found after extraction."
+          }
+
+      - name: Apply profile banner patch
+        shell: pwsh
+        working-directory: src
+        run: |
           git apply --check "$env:RUNNER_TEMP\profile-banner.patch"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git apply "$env:RUNNER_TEMP\profile-banner.patch"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -42,22 +56,49 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: Work around current MSYS2 diffutils package issue
+        shell: pwsh
+        working-directory: src
+        run: |
+          $file = "Telegram/build/prepare/prepare.py"
+          $text = [System.IO.File]::ReadAllText((Resolve-Path $file))
+          $old = "mingw-w64-x86_64-diffutils ^"
+          if (-not $text.Contains($old)) {
+            throw "Expected diffutils dependency was not found in prepare.py"
+          }
+          $text = $text.Replace($old, "diffutils ^")
+          [System.IO.File]::WriteAllText(
+            (Resolve-Path $file),
+            $text,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
       - name: Prepare dependencies
         shell: cmd
+        working-directory: src
         run: Telegram\build\prepare\win.bat
 
       - name: Configure
         shell: cmd
-        working-directory: Telegram
+        working-directory: src\Telegram
         run: configure.bat x64 -D TDESKTOP_API_ID=2040 -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627
 
       - name: Build Release
         shell: cmd
+        working-directory: src
         run: cmake --build out --config Release --target Telegram --parallel
+
+      - name: Show produced files
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:GITHUB_WORKSPACE\src\out\Release") {
+            Get-ChildItem "$env:GITHUB_WORKSPACE\src\out\Release" | Format-Table Name, Length
+          }
 
       - name: Upload AyuGram
         uses: actions/upload-artifact@v4
         with:
           name: AyuGram-7.0.9-ProfileBanner-Windows
-          path: out/Release/AyuGram.exe
+          path: src/out/Release/AyuGram.exe
           if-no-files-found: error
